@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import { promises as fs, constants } from "node:fs";
 import path from "node:path";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "openclaw/plugin-sdk/health";
@@ -188,6 +188,18 @@ function badRequest(message) {
   return err;
 }
 
+/** 이 자리가 심볼릭 링크면 거부한다. 디렉터리에 쓴다 — `assertPlainFile`은 파일용이다. */
+async function assertNotSymlink(dir) {
+  let stat;
+  try {
+    stat = await fs.lstat(dir);
+  } catch (err) {
+    if (err?.code === "ENOENT") return;
+    throw err;
+  }
+  if (stat.isSymbolicLink()) throw badRequest(`${path.basename(dir)}가 심볼릭 링크입니다.`);
+}
+
 /** 심볼릭 링크·하드링크로 워크스페이스 밖을 건드리는 것을 막는다. */
 async function assertPlainFile(target) {
   let stat;
@@ -234,8 +246,23 @@ export default definePluginEntry({
           await assertRealPathInsideMemory(workspaceDir, target);
           await assertPlainFile(target);
           await fs.mkdir(path.dirname(target), { recursive: true });
-          await fs.writeFile(target, content, "utf-8");
-          const stat = await fs.stat(target);
+
+          // `assertPlainFile`은 검사 시점의 사실일 뿐이다. 검사와 쓰기 사이에
+          // 누가 그 자리를 심볼릭 링크로 바꿔치기하면 링크 대상에 쓰게 된다(TOCTOU).
+          // `O_NOFOLLOW`는 그 판정을 **커널이 열 때** 하므로 그 틈이 없어진다.
+          // (부모 디렉터리 교체까지는 못 막는다 — Node가 openat을 안 내준다.)
+          const handle = await fs.open(
+            target,
+            constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW,
+            0o600,
+          );
+          let stat;
+          try {
+            await handle.writeFile(content, "utf-8");
+            stat = await handle.stat();
+          } finally {
+            await handle.close();
+          }
           respond(true, {
             agentId,
             path: path.relative(workspaceDir, target),
@@ -275,9 +302,17 @@ export default definePluginEntry({
           }
 
           const trashDir = path.join(workspaceDir, "memory", ".trash");
-          await fs.mkdir(trashDir, { recursive: true });
           const stamp = new Date().toISOString().replace(/[:.]/g, "-");
           const parked = path.join(trashDir, `${stamp}__${path.basename(target)}`);
+
+          // ⚠️ 지우는 쪽도 목적지를 봐야 한다. 원본만 검사하고 `.trash`를 안 보면,
+          // `.trash -> /바깥`이 미리 놓여 있을 때 `rename`이 링크를 따라가
+          // **파일을 워크스페이스 밖으로 옮겨준다.** `mkdir`은 이미 있는 심볼릭
+          // 링크를 지우지 않으므로 그것만으로는 아무것도 막지 못한다.
+          await assertRealPathInsideMemory(workspaceDir, parked);
+          await assertNotSymlink(trashDir);
+          await fs.mkdir(trashDir, { recursive: true });
+          await assertNotSymlink(trashDir);
           await fs.rename(target, parked);
           respond(true, {
             agentId,
