@@ -33,6 +33,9 @@ const WRITE_SCOPE = "operator.write";
  */
 const SHORT_TERM_BASENAME_RE = /^(\d{4})-(\d{2})-(\d{2})(?:-[^/]+)?\.md$/;
 
+/** 세션 id로 받아들일 글자. 경로 구분자와 `..`가 절대 못 들어오게 한다. */
+const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
 /** 슬러그로 받을 수 있는 글자. 경로를 벗어날 여지를 남기지 않는다. */
 const SLUG_RE = /^[0-9a-z가-힣][0-9a-z가-힣-]{0,48}$/i;
 
@@ -68,7 +71,60 @@ function extractMessageText(content) {
  * 쓸 파일의 상대 경로를 정한다. 같은 분에 두 번 부르면 덮어쓰지 않고 `-2`를 붙인다.
  * 기억을 소리 없이 잃는 것보다 파일이 하나 느는 편이 낫다.
  */
-async function resolveShortTermTarget(workspaceDir, now, rawSlug) {
+/**
+ * 해석된 경로가 **실제로도** `memory/` 안인지 본다.
+ *
+ * `resolveMemoryPath`는 `path.resolve`로만 판단한다 — 글자 계산이라
+ * `memory/link -> /바깥`처럼 **중간 디렉터리가 심볼릭 링크**면 그대로 통과한다.
+ * 그러면 write가 OS 수준에서 링크를 따라가 워크스페이스 밖을 건드린다.
+ * `assertPlainFile`은 마지막 파일만 `lstat`하므로 이걸 못 잡는다.
+ *
+ * 그래서 존재하는 가장 깊은 조상까지 올라가 `realpath`로 실체를 확인한다.
+ * 아직 없는 구간은 만들어질 자리 그대로 이어붙여 비교한다.
+ * **디렉터리를 만들기 전에** 불러야 한다 — `mkdir -p`가 링크를 따라가 버리면 늦는다.
+ */
+async function assertRealPathInsideMemory(workspaceDir, target) {
+  const memoryRoot = path.resolve(workspaceDir, "memory");
+  let realRoot;
+  try {
+    realRoot = await fs.realpath(memoryRoot);
+  } catch (err) {
+    if (err?.code !== "ENOENT") throw err;
+    realRoot = memoryRoot;
+  }
+
+  const tail = [];
+  let probe = path.dirname(target);
+  for (;;) {
+    let real;
+    try {
+      real = await fs.realpath(probe);
+    } catch (err) {
+      if (err?.code !== "ENOENT") throw err;
+      const parent = path.dirname(probe);
+      if (parent === probe) throw badRequest("경로를 확인할 수 없습니다.");
+      tail.push(path.basename(probe));
+      probe = parent;
+      continue;
+    }
+    const rebuilt = path.resolve(real, ...[...tail].reverse());
+    if (rebuilt !== realRoot && !rebuilt.startsWith(realRoot + path.sep)) {
+      throw badRequest("경로가 심볼릭 링크로 memory/ 밖을 가리킵니다.");
+    }
+    return;
+  }
+}
+
+/**
+ * 단기 기억 파일을 만들고 내용을 쓴다. **이름 선점과 생성이 한 번에 일어난다.**
+ *
+ * 예전에는 `fs.access`로 없는 이름을 고른 뒤 따로 `writeFile`을 했다. 그 사이가
+ * 원자적이지 않아서, 같은 분에 두 번 불리면 둘 다 "없다"를 보고 같은 파일에 써서
+ * **먼저 쓴 기억이 사라졌다.** `wx`(O_CREAT|O_EXCL)는 이름 선점을 커널이 보장하고,
+ * 덤으로 **마지막 경로 요소가 심볼릭 링크면 아예 열리지 않는다.**
+ * 이미 있으면 `EEXIST`가 나므로 `-2`, `-3`으로 넘어간다.
+ */
+async function createShortTermMemoryFile(workspaceDir, now, rawSlug, content) {
   const day = formatLocalDate(now);
   let base;
   if (rawSlug != null && String(rawSlug).trim() !== "") {
@@ -82,10 +138,24 @@ async function resolveShortTermTarget(workspaceDir, now, rawSlug) {
   for (let n = 1; n <= 50; n += 1) {
     const name = n === 1 ? `${base}.md` : `${base}-${n}.md`;
     if (!SHORT_TERM_BASENAME_RE.test(name)) throw badRequest(`단기 기억 이름 규칙에 안 맞습니다: ${name}`);
+    const relative = path.posix.join("memory", name);
+    const target = resolveMemoryPath(workspaceDir, relative);
+    await assertRealPathInsideMemory(workspaceDir, target);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+
+    let handle;
     try {
-      await fs.access(path.join(workspaceDir, "memory", name));
-    } catch {
-      return path.posix.join("memory", name);
+      handle = await fs.open(target, "wx");
+    } catch (err) {
+      if (err?.code === "EEXIST") continue;
+      throw err;
+    }
+    try {
+      await handle.writeFile(content, "utf-8");
+      const stat = await handle.stat();
+      return { relative, size: stat.size, updatedAtMs: Math.floor(stat.mtimeMs) };
+    } finally {
+      await handle.close();
     }
   }
   throw badRequest("같은 이름이 너무 많습니다.");
@@ -161,6 +231,7 @@ export default definePluginEntry({
           const { agentId, workspaceDir } = workspaceFor(context, params);
           const target = resolveMemoryPath(workspaceDir, params.path);
           const content = typeof params.content === "string" ? params.content : "";
+          await assertRealPathInsideMemory(workspaceDir, target);
           await assertPlainFile(target);
           await fs.mkdir(path.dirname(target), { recursive: true });
           await fs.writeFile(target, content, "utf-8");
@@ -190,6 +261,7 @@ export default definePluginEntry({
         try {
           const { agentId, workspaceDir } = workspaceFor(context, params);
           const target = resolveMemoryPath(workspaceDir, params.path);
+          await assertRealPathInsideMemory(workspaceDir, target);
           if (!(await assertPlainFile(target))) {
             respond(false, undefined, { code: "NOT_FOUND", message: "그런 파일이 없습니다." });
             return;
@@ -297,8 +369,16 @@ export default definePluginEntry({
           const entry = index?.[sessionKey];
           const sessionId = entry?.sessionId;
           if (!sessionId) throw badRequest(`그런 세션이 없습니다: ${sessionKey}`);
+          // 인덱스는 openclaw가 쓰는 파일이지만 그걸 믿고 경로에 이어붙이지 않는다.
+          // `../..` 같은 값이 들어오면 sessions/ 밖의 파일을 읽게 된다.
+          if (typeof sessionId !== "string" || !SESSION_ID_RE.test(sessionId)) {
+            throw badRequest("세션 id 형식이 올바르지 않습니다.");
+          }
 
           const transcriptPath = path.join(sessionsDir, `${sessionId}.jsonl`);
+          if (path.dirname(path.resolve(transcriptPath)) !== path.resolve(sessionsDir)) {
+            throw badRequest("전사 경로가 sessions/ 밖을 가리킵니다.");
+          }
           let raw;
           try {
             raw = await fs.readFile(transcriptPath, "utf-8");
@@ -354,20 +434,15 @@ export default definePluginEntry({
             return;
           }
 
-          const relative = await resolveShortTermTarget(workspaceDir, now, params.slug);
-          const target = resolveMemoryPath(workspaceDir, relative);
-          await assertPlainFile(target);
-          await fs.mkdir(path.dirname(target), { recursive: true });
-          await fs.writeFile(target, text, "utf-8");
-          const stat = await fs.stat(target);
+          const written = await createShortTermMemoryFile(workspaceDir, now, params.slug, text);
 
           respond(true, {
             agentId,
-            path: relative,
+            path: written.relative,
             messageCount: kept.length,
-            size: stat.size,
+            size: written.size,
             sanitizeNotes,
-            updatedAtMs: Math.floor(stat.mtimeMs),
+            updatedAtMs: written.updatedAtMs,
           });
         } catch (error) {
           fail(respond, error);

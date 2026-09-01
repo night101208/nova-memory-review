@@ -58,3 +58,17 @@ openclaw 본체는 건드리지 않습니다(업그레이드마다 날아가므�
 - 호스트명·IP는 `GATEWAY-HOST`로, 홈 경로는 `/Users/USER`로 치환했습니다.
 - 정규식들은 문서가 아니라 **설치된 패키지(openclaw 2026.7.1-2)의
   `dist/short-term-promotion-*.js` 576-581행에서 그대로 옮긴 것**입니다.
+
+---
+
+## 1차 검사 반영 (수정됨)
+
+외부 검사에서 나온 지적 중 셋을 고쳤습니다. 재검사할 때는 아래를 감안해주세요.
+
+| 지적 | 처리 |
+|---|---|
+| 파일 생성 경합 (`fs.access` → `writeFile`) | **고침.** `fs.open(target,"wx")`로 원자화. 동시 3회 호출이 파일 3개를 만드는 것으로 실측 확인 |
+| 부모 디렉터리 심볼릭 링크로 `memory/` 밖 접근 | **고침.** `assertRealPathInsideMemory` 추가 — 존재하는 가장 깊은 조상까지 `realpath`로 확인. `mkdir` 전에 검사. `save`·`delete`·`capture` 전부 적용. 실측으로 차단 확인 |
+| `sessionId` 경로 검증 없음 | **고침.** `SESSION_ID_RE` + 이어붙인 경로가 `sessions/` 바로 아래인지 확인 |
+| 청크 경계에서 `^user:`가 시작될 수 있다 | **해당 없음.** `internal-ss-Qpla0.js:270`의 `chunkMarkdown`이 `content.split("\n")` 후 줄 단위로 모으고 `join("\n")`으로 합칩니다. 청크는 항상 줄 경계에서 시작하므로 줄 단위 검사가 맞는 입자입니다 |
+| `sanitizeForShortTerm` 설계 | 현행 유지 (검사 의견과 같음) |
