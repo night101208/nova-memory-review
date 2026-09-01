@@ -334,6 +334,11 @@ export default definePluginEntry({
         try {
           const { agentId, workspaceDir } = workspaceFor(context, params);
           const trashDir = path.join(workspaceDir, "memory", ".trash");
+          // ⚠️ 읽기도 링크를 따라간다. `.trash -> /바깥`이 놓여 있으면
+          // `fs.readdir`이 워크스페이스 밖 디렉터리의 목록을 그대로 돌려준다.
+          // 지우는 쪽만 막고 여기를 안 막으면 **목록이 새는 문이 남는다.**
+          await assertNotSymlink(trashDir);
+          await assertRealPathInsideMemory(workspaceDir, path.join(trashDir, "x"));
           let names = [];
           try {
             names = (await fs.readdir(trashDir, { withFileTypes: true }))

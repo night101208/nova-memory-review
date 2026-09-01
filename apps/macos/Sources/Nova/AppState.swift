@@ -476,8 +476,14 @@ final class AppState: ObservableObject {
         draft = ""
         // 세션 키를 새로 만든다. 같은 키를 계속 쓰면 전사가 한없이 길어지고,
         // 다음 capture가 예전 대화까지 다시 담는다.
-        let stamp = Int(Date().timeIntervalSince1970)
-        let key = "main-\(stamp)"
+        //
+        // ⚠️ 초 단위 타임스탬프는 충돌한다. 나눈 말이 없으면 capture를 건너뛰고
+        // 바로 여기로 오기 때문에, 같은 초에 "새 대화"를 두 번 누르면
+        // **두 대화가 같은 세션 키를 쓰게 된다.** 밀리초에 짧은 난수를 덧붙인다.
+        // (시각을 앞에 두는 건 전사를 눈으로 훑을 때 순서가 보이게 하려는 것이다.)
+        let stamp = Int(Date().timeIntervalSince1970 * 1000)
+        let salt = String(UUID().uuidString.prefix(8)).lowercased()
+        let key = "main-\(stamp)-\(salt)"
         sessionKey = key
         client.switchSession(to: key)
         diagLog("새 대화 세션 = \(key)")
