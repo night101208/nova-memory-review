@@ -88,3 +88,46 @@ openclaw 본체는 건드리지 않습니다(업그레이드마다 날아가므�
 | `delete`의 `.trash` 목적지에 realpath 검사가 없음 | **고침.** `parked`에도 `assertRealPathInsideMemory`를 걸고, `assertNotSymlink`로 `.trash` 자체를 `mkdir` 전후로 확인합니다. 실측: `.trash -> /tmp/...`를 놓고 삭제 요청 시 거부되고 밖에 아무것도 안 생깁니다 |
 | `save`의 검사–쓰기 TOCTOU | **고침.** `fs.writeFile` 대신 `O_WRONLY\|O_CREAT\|O_TRUNC\|O_NOFOLLOW`로 연 핸들에 씁니다. 마지막 경로 요소의 심볼릭 링크 판정을 커널이 여는 순간 합니다. **부모 디렉터리 교체까지는 못 막습니다** — Node가 `openat`을 안 내줍니다 |
 | `rpc.mjs`의 `--url` 제한 없음 | **현행 유지.** 로컬 관리용 CLI라 신뢰할 수 없는 입력을 받지 않습니다. 외부 입력을 넘기는 용도로 확장하면 그때 제한이 필요하다는 지적에 동의합니다 |
+
+---
+
+## 4차 — 새로 추가된 검사 대상: 맥 앱의 "새 대화"
+
+지금까지는 게이트웨이 플러그인만 봤습니다. 이번에 **그 플러그인을 부르는 쪽**이 붙어서
+같이 올립니다.
+
+| 파일 | 이번에 바뀐 것 |
+|---|---|
+| `apps/macos/Sources/Nova/Views/ChatView.swift` | 툴바 "새 대화" 버튼 + 결과 상태줄 |
+| `apps/macos/Sources/Nova/AppState.swift` | `startNewConversation()` · `beginFreshSession()` |
+| `apps/macos/Sources/Nova/GatewayClient.swift` | `switchSession(to:)` · `currentSessionKey` |
+
+### 무슨 문제를 푸는 코드인가
+
+`nova.memory.session.capture`(이 저장소의 플러그인)를 만들어놓고 **부르는 곳이 없었습니다.**
+단기 기억이 생기는 유일한 경로가 CLI로 손수 부르는 것뿐이라, 앱으로 아무리 대화해도
+기억이 안 쌓이고 새벽 정리(dreaming)가 처리할 것도 없었습니다.
+
+openclaw의 `session-memory` 훅이 원래 이 일을 하지만 두 겹으로 막혀 있습니다 —
+`/reset`에만 걸리는데 앱에 `operator.admin`이 없고(보내도 **에러 없이 무시**됨),
+훅이 쓰는 형식은 승격 경로가 오염으로 버립니다. 그래서 직접 부릅니다.
+
+### 봐줬으면 하는 것
+
+1. **세션 전환의 정합성.** `beginFreshSession()`이 `AppState.sessionKey`와
+   `GatewayClient.switchSession()`을 각각 갱신합니다. 두 곳에 같은 상태가 있는데
+   재연결(`connect(sessionKey:)`) 경로와 어긋날 여지가 있는지.
+2. **구독 재등록.** `switchSession`이 `state == .connected`일 때만 재구독합니다.
+   연결이 끊긴 동안 세션을 바꾸고 나중에 재연결되면 구독이 제대로 걸리는지.
+3. **실패 처리 정책.** 저장에 실패해도 새 대화를 시작합니다(사용자가 요청한 건
+   새 대화이므로). 이 선택이 타당한지, 그리고 실패가 사용자에게 확실히 보이는지.
+4. **경합.** `isStartingNewConversation`으로 버튼을 잠그지만, 저장 중에 사용자가
+   메시지를 보내면 어느 세션으로 가는지.
+5. **콜백 수명.** `client.call`의 클로저가 `[weak self]`인데, 그 사이 창이 닫히거나
+   재연결되면 어떻게 되는지.
+
+### 검증 상태 (정직하게)
+
+- `swift build` 통과 · 번들 생성 · 앱 실행 확인
+- `session.capture` 자체는 CLI로 실제 호출해 파일 생성까지 확인
+- ⚠️ **버튼을 눌러 끝까지 도는 것은 아직 확인 못 했습니다.** 사람이 눌러야 합니다
