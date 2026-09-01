@@ -70,5 +70,13 @@ openclaw 본체는 건드리지 않습니다(업그레이드마다 날아가므�
 | 파일 생성 경합 (`fs.access` → `writeFile`) | **고침.** `fs.open(target,"wx")`로 원자화. 동시 3회 호출이 파일 3개를 만드는 것으로 실측 확인 |
 | 부모 디렉터리 심볼릭 링크로 `memory/` 밖 접근 | **고침.** `assertRealPathInsideMemory` 추가 — 존재하는 가장 깊은 조상까지 `realpath`로 확인. `mkdir` 전에 검사. `save`·`delete`·`capture` 전부 적용. 실측으로 차단 확인 |
 | `sessionId` 경로 검증 없음 | **고침.** `SESSION_ID_RE` + 이어붙인 경로가 `sessions/` 바로 아래인지 확인 |
-| 청크 경계에서 `^user:`가 시작될 수 있다 | **해당 없음.** `internal-ss-Qpla0.js:270`의 `chunkMarkdown`이 `content.split("\n")` 후 줄 단위로 모으고 `join("\n")`으로 합칩니다. 청크는 항상 줄 경계에서 시작하므로 줄 단위 검사가 맞는 입자입니다 |
+| 청크 경계에서 `^user:`가 시작될 수 있다 | **⚠️ 지적이 맞았습니다. 앞선 반박은 틀렸습니다.** `chunkMarkdown` 앞부분만 읽고 "줄 단위"라고 답했는데, 함수 뒷부분이 `maxChars`보다 긴 줄을 segment로 쪼갭니다 — 청크가 줄 중간에서 시작할 수 있습니다. 원본은 `docs/openclaw-evidence.md`에 인용했습니다. **고쳤습니다**: 줄 길이에 기대는 대신 본문의 `user:`/`assistant:`/`Conversation Summary:`를 콜론 앞 공백으로 무해화합니다(설정과 무관). 검증은 **본문의 모든 문자 위치를 조각 시작으로 놓고** 앵커 규칙을 돌렸고, 정화 전 `at:34` 검출 → 정화 후 `null` |
 | `sanitizeForShortTerm` 설계 | 현행 유지 (검사 의견과 같음) |
+
+## 2차 검사 반영
+
+- `docs/openclaw-evidence.md`에 **openclaw 설치본 원본을 인용**했습니다.
+  1차 검사에서 "chunkMarkdown 구현을 이 사본만으로는 독립 확인할 수 없다"는
+  단서를 다셨는데, 그 확인이 가능하도록 넣은 것입니다.
+  openclaw는 MIT이고 `npm pack openclaw@2026.7.1-2`로 누구나 같은 내용을 얻을 수 있습니다.
+- 그 원본을 끝까지 읽고 **1차 검사의 ①번 지적이 맞았음을 확인했습니다.** 위 표를 고쳤습니다.

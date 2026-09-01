@@ -122,9 +122,24 @@ export function sanitizeForShortTerm(text) {
   const notes = [];
   let out = String(text ?? "");
 
-  const before = out;
+  const beforeSession = out;
   out = out.replace(/\bSession (Key|ID)\b/gi, (m, kind) => `Session-${kind}`);
-  if (out !== before) notes.push("'Session Key'/'Session ID' 라벨의 공백을 붙임표로 바꿨습니다 (RAW_SESSION_METADATA_RE 회피)");
+  if (out !== beforeSession) notes.push("'Session Key'/'Session ID' 라벨의 공백을 붙임표로 바꿨습니다 (RAW_SESSION_METADATA_RE 회피)");
+
+  // ⚠️ 앵커 규칙은 줄 시작만 보는 게 아니다 — **조각(chunk) 시작**을 본다.
+  // 그리고 조각은 줄 경계에서만 갈리지 않는다. `chunkMarkdown`(internal-ss-*.js)이
+  // `maxChars = max(32, chunking.tokens * 4)`보다 긴 줄을 segment로 쪼개고,
+  // 조각은 segment 단위로 모인다. 즉 **긴 줄은 중간에서 갈릴 수 있고**
+  // 그 지점이 하필 "user: " 앞이면 그 조각이 통째로 버려진다.
+  //
+  // 줄 길이를 짧게 유지하는 것으로도 피할 수 있지만 그건 `chunking.tokens`라는
+  // **사용자 설정에 기대는 것**이다. 값을 낮추면 조용히 깨진다.
+  // 그래서 본문에 있는 역할 표기 자체를 무해하게 만든다 — 규칙이 `user`와 `:`가
+  // 붙어 있을 것을 요구하므로 사이에 공백 하나를 넣으면 어디서 갈리든 안 걸린다.
+  const beforeTurn = out;
+  out = out.replace(/\b(user|assistant)(:\s)/gi, (m, role, tail) => `${role} ${tail}`);
+  out = out.replace(/\bConversation Summary:/gi, "Conversation Summary :");
+  if (out !== beforeTurn) notes.push("본문의 'user:'/'assistant:'/'Conversation Summary:' 뒤 콜론 앞에 공백을 넣었습니다 (앵커 규칙 회피 — 조각이 줄 중간에서 시작할 수 있습니다)");
 
   return { text: out, notes };
 }
