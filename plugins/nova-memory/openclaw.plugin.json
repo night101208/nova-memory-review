@@ -1,0 +1,14 @@
+{
+  "id": "nova-memory",
+  "name": "NOVA Memory",
+  "description": "기억 파일을 고치고 지우는 게이트웨이 메서드를 더한다. 읽기는 기본 게이트웨이로 이미 되고, 쓰기만 없어서 이것만 채운다.",
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
