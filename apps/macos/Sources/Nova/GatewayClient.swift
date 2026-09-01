@@ -163,6 +163,22 @@ final class GatewayClient {
         session = nil
         connectRequestID = nil
         chatRequestIDs.removeAll()
+        // 이 소켓으로 나간 요청은 이제 응답을 받을 길이 없다. 여기서 실패로
+        // 끝내지 않으면 콜백을 기다리는 쪽(예: "새 대화"의 저장 중 상태)이
+        // **영원히 안 풀린다.** 재연결·명시적 해제·`connect()` 재호출 전부
+        // 결국 여기를 거치므로 실패 처리 자리는 한 곳이면 된다.
+        failAllPendingRequests()
+    }
+
+    /// 응답을 못 받게 된 요청을 전부 실패로 마무리한다. 완료 콜백은 메인
+    /// 스레드에서 불린다는 계약(`call`의 문서 참고)을 여기서도 지킨다.
+    private func failAllPendingRequests() {
+        guard !pendingRequests.isEmpty else { return }
+        let completions = Array(pendingRequests.values)
+        pendingRequests.removeAll()
+        for completion in completions {
+            completion(false, nil, .object(["message": .string("게이트웨이 연결이 끊겨 응답을 받지 못했습니다.")]))
+        }
     }
 
     /// 지수 백오프로 재연결을 예약한다 (1초에서 시작해 최대 30초).
@@ -361,11 +377,19 @@ final class GatewayClient {
 
     /// 게이트웨이는 세션 키를 `agent:<agentId>:<키>` 형태로 정규화하므로,
     /// 우리가 보낸 `main` 같은 원본 키와 이벤트에 실려 오는 키가 글자 그대로는 다르다.
-    /// 정규화된 쪽이 원본을 접미사로 갖는 관계까지 같은 세션으로 본다.
+    ///
+    /// ⚠️ 예전에는 접미사 일치(`hasSuffix`)로 봤는데, 그러면 세션 이름이 겹칠 때
+    /// 범위가 너무 넓어진다 — 우리 세션이 `foo`인데 다른 에이전트의
+    /// `agent:other:foo` 이벤트까지 "같은 세션"으로 잡을 수 있었다.
+    /// 지금은 정확히 두 형태만 인정한다: 글자 그대로 같거나, **우리 에이전트로**
+    /// 정규화된 형태(`agent:<우리 agentId>:<키>`)와 같은 것.
     private func matchesSession(_ key: String) -> Bool {
-        key == sessionKey
-            || key.hasSuffix(":" + sessionKey)
-            || sessionKey.hasSuffix(":" + key)
+        key == sessionKey || key == normalizedSessionKey
+    }
+
+    /// 이 앱은 단일 에이전트(`main`)만 다룬다 — `AppState.memoryAgentID`와 같다.
+    private var normalizedSessionKey: String {
+        sessionKey.hasPrefix("agent:") ? sessionKey : "agent:main:\(sessionKey)"
     }
 
     /// 누적 스냅샷(`message`)에서 텍스트를 꺼낸다. 문자열일 수도, 메시지 레코드일 수도 있다.

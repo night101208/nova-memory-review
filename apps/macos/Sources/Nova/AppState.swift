@@ -373,9 +373,14 @@ final class AppState: ObservableObject {
                 self.diagLog("  · \(item.path)  \(item.displaySize)  편집가능=\(item.isEditable) 단기=\(item.isShortTerm)")
             }
             let shortTerm = all.filter(\.isShortTerm).count
+            // ⚠️ 예전에는 "- 1"로 MEMORY.md 한 칸을 무조건 뺐다. 그런데 그 파일은
+            // `appendRootMemoryIndex`가 게이트웨이 호출에 실패하거나 파일이 정말
+            // 없으면 **안 붙인다.** 그러면 없는 것도 뺀 셈이 되어 "장기 -1개"처럼
+            // 나온다. 실제로 루트 파일인 항목 수를 세는 쪽이 맞다.
+            let rootCount = all.filter(\.isRootFile).count
             self.memoryStatus = all.isEmpty
                 ? "기억이 없습니다."
-                : "장기 \(all.count - shortTerm - 1)개 · 단기 \(shortTerm)개"
+                : "장기 \(all.count - shortTerm - rootCount)개 · 단기 \(shortTerm)개"
             self.syncMemorySelection()
         }
     }

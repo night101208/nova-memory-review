@@ -83,14 +83,49 @@ function extractMessageText(content) {
  * 아직 없는 구간은 만들어질 자리 그대로 이어붙여 비교한다.
  * **디렉터리를 만들기 전에** 불러야 한다 — `mkdir -p`가 링크를 따라가 버리면 늦는다.
  */
-async function assertRealPathInsideMemory(workspaceDir, target) {
-  const memoryRoot = path.resolve(workspaceDir, "memory");
-  let realRoot;
+/**
+ * 해석된 경로가 **실제로도** `root` 안인지 본다. 이름에 `Memory`가 없는 이유는
+ * 이제 `memory/`뿐 아니라 `sessions/`에도 같은 검사를 걸기 때문이다 — 뿌리만 다르고
+ * 위험은 같다: 중간 디렉터리가 심볼릭 링크면 글자 비교(`resolveMemoryPath`)로는
+ * 못 잡고, 마지막 파일만 보는 `assertPlainFile`로도 못 잡는다.
+ *
+ * 존재하는 가장 깊은 조상까지 올라가 `realpath`로 실체를 확인하고,
+ * 아직 없는 구간은 만들어질 자리 그대로 이어붙여 비교한다.
+ * **디렉터리를 만들기 전에** 불러야 한다 — `mkdir -p`가 링크를 따라가 버리면 늦는다.
+ */
+async function assertRealPathInside(root, target, label) {
+  const resolvedRoot = path.resolve(root);
+  const rootLabel = label ?? path.basename(resolvedRoot) + "/";
+
+  // ⚠️ root 자체를 `realpath`로 따라가면 안 된다. 그러면 root가 심볼릭
+  // 링크일 때 "그 링크가 가리키는 곳"이 기준선이 되어 버려서, 거기 안쪽인지
+  // 검사해봐야 **항상 통과한다.** (`lint`·`sessions/` 검사에서 실측으로 확인한
+  // 구멍이다 — target이 root의 바로 아래에 있으면 walk-up이 첫 걸음에서
+  // root 자신을 만나고, 그 실체가 이미 링크를 따라간 값이라 자기 자신과
+  // 비교해 항상 같다고 나온다.)
+  //
+  // 그래서 root의 **부모**만 realpath로 확인하고, root의 이름은 글자 그대로
+  // 이어붙인다. root가 심볼릭 링크로 바뀌어 있으면 "있어야 할 자리"와
+  // "실제로 가리키는 곳"이 갈라지고, 그 차이로 잡아낸다.
+  const rootParent = path.dirname(resolvedRoot);
+  let realRootParent;
   try {
-    realRoot = await fs.realpath(memoryRoot);
+    realRootParent = await fs.realpath(rootParent);
   } catch (err) {
     if (err?.code !== "ENOENT") throw err;
-    realRoot = memoryRoot;
+    realRootParent = rootParent;
+  }
+  const realRoot = path.join(realRootParent, path.basename(resolvedRoot));
+
+  let actualRootReal = null;
+  try {
+    actualRootReal = await fs.realpath(resolvedRoot);
+  } catch (err) {
+    if (err?.code !== "ENOENT") throw err;
+    // 아직 없으면(예: `.trash`를 처음 만드는 중) 나중에 `mkdir`이 만든다 — 통과.
+  }
+  if (actualRootReal !== null && actualRootReal !== realRoot) {
+    throw badRequest(`경로가 심볼릭 링크로 ${rootLabel} 밖을 가리킵니다.`);
   }
 
   const tail = [];
@@ -109,10 +144,15 @@ async function assertRealPathInsideMemory(workspaceDir, target) {
     }
     const rebuilt = path.resolve(real, ...[...tail].reverse());
     if (rebuilt !== realRoot && !rebuilt.startsWith(realRoot + path.sep)) {
-      throw badRequest("경로가 심볼릭 링크로 memory/ 밖을 가리킵니다.");
+      throw badRequest(`경로가 심볼릭 링크로 ${rootLabel} 밖을 가리킵니다.`);
     }
     return;
   }
+}
+
+/** `memory/` 전용 별칭. 기존 호출부를 그대로 둔다. */
+async function assertRealPathInsideMemory(workspaceDir, target) {
+  await assertRealPathInside(path.join(workspaceDir, "memory"), target, "memory/");
 }
 
 /**
@@ -396,6 +436,11 @@ export default definePluginEntry({
             resolveDefaultAgentId(cfg);
           const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
           const sessionsDir = resolveSessionsDir(cfg, agentId);
+          // ⚠️ sessionId는 정규식으로 막았지만 그건 **파일 이름** 얘기다.
+          // `sessions/` 디렉터리 자체가 심볼릭 링크면 정상적인 이름이라도
+          // 그 링크가 가리키는 곳에서 읽힌다. `memory/`에 건 것과 같은 종류의
+          // 검사를 여기도 걸어야 한다 — 뿌리가 다르니 함수도 따로 둔다.
+          await assertRealPathInside(sessionsDir, path.join(sessionsDir, "x"));
 
           // 세션 키 → 세션 id. 인덱스는 `agent:<id>:<키>`로 정규화된 키를 쓴다 (하드윈 5번).
           const indexPath = path.join(sessionsDir, "sessions.json");
@@ -501,6 +546,11 @@ export default definePluginEntry({
         try {
           const { agentId, workspaceDir } = workspaceFor(context, params);
           const memoryDir = path.join(workspaceDir, "memory");
+          // ⚠️ 다른 메서드는 전부 실체를 확인하는데 여기만 빠져 있었다.
+          // `memory/`가 심볼릭 링크면 `readdir`이 워크스페이스 밖 디렉터리를
+          // 그대로 목록으로 준다 — 읽기 전용이라 방심하기 쉬운 자리였다.
+          await assertNotSymlink(memoryDir);
+          await assertRealPathInsideMemory(workspaceDir, path.join(memoryDir, "x"));
           let names = [];
           try {
             names = (await fs.readdir(memoryDir, { withFileTypes: true }))
@@ -513,7 +563,11 @@ export default definePluginEntry({
 
           const entries = [];
           for (const name of names) {
-            const body = await fs.readFile(path.join(memoryDir, name), "utf-8");
+            const filePath = path.join(memoryDir, name);
+            // 목록에 있던 파일이 그 사이 심볼릭 링크로 바뀌었을 수도 있다.
+            // 개별 파일도 다른 메서드와 같은 기준(`assertPlainFile`)으로 본다.
+            if (!(await assertPlainFile(filePath))) continue;
+            const body = await fs.readFile(filePath, "utf-8");
             const hit = findContamination(body);
             entries.push({
               name,

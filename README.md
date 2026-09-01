@@ -146,3 +146,21 @@ openclaw의 `session-memory` 훅이 원래 이 일을 하지만 두 겹으로 �
 | 새 세션 키가 초 단위라 충돌 가능 | **고침.** 밀리초 + 짧은 난수(`main-<ms>-<8자>`). 나눈 말이 없으면 capture를 건너뛰고 바로 새 세션으로 오기 때문에 잠금으로는 못 막는 경로였습니다 |
 | `trash.list`에 `.trash` symlink 방어 없음 | **고침.** `assertNotSymlink` + `assertRealPathInsideMemory`. 실측: `.trash -> /tmp/...`(안에 `secret.md`) 상태에서 거부되고, 링크를 치우면 정상 동작합니다 |
 | 부모 디렉터리 TOCTOU | **현행 유지.** 마지막 경로 요소는 `O_NOFOLLOW`/`wx`로 막혔고, 부모는 Node가 `openat`을 안 내줘 구조를 크게 뜯어야 합니다. 검사자 의견과 같이 우선순위를 낮춰 **남는 한계로 문서화**합니다 |
+
+### 6차 검사 반영 — 반복된 옆문 패턴을 구조적으로 닫음
+
+이번엔 개별 지적을 하나씩 고치는 대신, **공통 함수 자체를 고쳐서** 같은 문제가
+일곱 번째 메서드에서 또 나오는 걸 막으려 했습니다.
+
+| 지적 | 처리 |
+|---|---|
+| `lint`가 `memory/` 실체 확인이 아예 없음 | **고침.** `assertNotSymlink`+`assertRealPathInsideMemory` 추가, 개별 파일도 `assertPlainFile`로 확인 |
+| `capture`가 `sessions/`는 방어 없이 읽음 | **고침.** `assertRealPathInside(sessionsDir, ...)` 추가 |
+| ⚠️ **위 두 개를 고치다가 방어 함수 자체의 구멍을 발견** | `assertRealPathInside`가 `root` 자신을 `realpath`로 따라가서, root == 읽으려는 디렉터리인 경우(정확히 lint·sessions 케이스) 검사가 무력했습니다. 실측: `sessions/` 링크 상태에서 `sessions.json`(1.3MB)이 실제로 밖에서 읽혔습니다. root의 **부모만** realpath하고 이름은 글자 그대로 이어붙이는 방식으로 고쳤습니다. |
+| 저장 중 연결 끊기면 잠금이 안 풀림 | **고침.** `teardownSocket()`에서 `pendingRequests`를 실패로 정리. 코드 추적으로 검증(재현엔 GUI 필요) |
+| 세션 매칭이 접미사 비교라 범위가 넓음 | **고침.** 정확히 두 형태(그대로 같음 / `agent:main:<키>`)만 인정 |
+| 기억 개수 표시의 매직 넘버 `-1` | **고침.** `isRootFile` 실제 개수로 대체 |
+
+실측: `sessions/ -> /tmp/...` 상태에서 막기 전엔 `sessions.json`이 그대로 읽혔고,
+고친 뒤엔 `"경로가 심볼릭 링크로 sessions/ 밖을 가리킵니다."`로 거부됩니다.
+회귀로 5개 메서드(lint·capture·trash.list·save·delete) 전부 정상 확인했습니다.
