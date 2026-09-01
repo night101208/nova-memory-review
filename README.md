@@ -164,3 +164,21 @@ openclaw의 `session-memory` 훅이 원래 이 일을 하지만 두 겹으로 �
 실측: `sessions/ -> /tmp/...` 상태에서 막기 전엔 `sessions.json`이 그대로 읽혔고,
 고친 뒤엔 `"경로가 심볼릭 링크로 sessions/ 밖을 가리킵니다."`로 거부됩니다.
 회귀로 5개 메서드(lint·capture·trash.list·save·delete) 전부 정상 확인했습니다.
+
+### 7차 검사 반영 — 분류만, 수정은 다음 라운드로
+
+이번엔 1~6차 수정 내역을 전제하지 않고 처음부터 다시 훑는 방식으로 검사받았습니다.
+이번 라운드는 **분류만 하고 고치지 않기로** 했습니다 — 실제 결함과 잔여 위험을 나눠 기록만 남깁니다.
+
+| 판정 | 지적 | 분류 이유 |
+|---|---|---|
+| 🔴 즉시 수정 대상 | `session.capture`가 `sessions/` 디렉터리 실체는 확인하면서 그 안의 `sessions.json`·`<sessionId>.jsonl` 개별 파일은 `fs.readFile()`로 바로 읽음 — symlink 미검증 | 6차와 같은 "방어 함수는 있는데 적용 안 된 경로" 패턴. transcript가 대상이라 임의 파일 읽기로 이어질 수 있음 |
+| 🟡 잔여 위험 | 진행 중인 turn이 안 끝난 상태에서 "새 대화"를 누르면 `session.capture`가 미완성 transcript를 읽을 수 있음 (`chat.send`는 접수 확인일 뿐 완료가 아님) | 경계 침해가 아니라 **기억 유실 가능성이 있는 정합성 버그**. 최악의 경우도 해당 턴의 답변이 기억에서 빠지는 것뿐 |
+| 🟡 잔여 위험 (재확인) | `assertRealPathInside` 통과 후 `mkdir`/`open` 사이 부모 디렉터리 교체 TOCTOU | 5차에서 이미 기록한 **알려진 한계**. 이번 라운드에서 다시 확인됐을 뿐 새로 발견된 건 아님 |
+
+닫힌 것으로 재확인: `assertRealPathInside` 자기검사(6차 패턴 재발 없음), `.trash`/`memory`/`sessions/`
+디렉터리 symlink, 파일 생성 경합, `save` TOCTOU, `..` 탈출, 청크 경계 오염,
+`short-term-format.js` 마지막 관문, JSONL 파싱 내구성, macOS 전송 잠금.
+
+**다음 라운드에서 고칠 순서:** ① `sessions.json`/`<sessionId>.jsonl` symlink 검증 →
+② capture 전에 진행 중 turn 완료를 기다리는 정합성 보강 → ③ 부모 디렉터리 TOCTOU는 한계로 유지.
