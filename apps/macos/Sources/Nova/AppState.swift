@@ -206,6 +206,17 @@ final class AppState: ObservableObject {
 
     /// 컴포저의 현재 입력을 보내고 비운다.
     func sendDraft() {
+        // ⚠️ 기억으로 남기는 중에는 보내지 않는다.
+        // 지금 보내면 그 말이 **닫히는 중인 옛 세션**으로 들어가고, 곧 이어질
+        // `beginFreshSession()`이 화면을 비워서 사용자에게는 말이 그냥 사라진 것처럼 보인다.
+        // 게다가 그 말이 방금 저장한 기억에 들어갔는지 아닌지가 타이밍에 따라 달라진다.
+        // 버튼만 잠그는 것으로는 부족했다 — 이 경로가 열려 있었다.
+        //
+        // 입력은 **지우지 않는다.** 저장이 끝난 뒤 그대로 다시 누르면 된다.
+        guard !isStartingNewConversation else {
+            chatStatus = "대화를 기억으로 남기는 중입니다. 잠시 뒤에 보내주세요."
+            return
+        }
         let text = draft
         draft = ""
         sendChat(text)

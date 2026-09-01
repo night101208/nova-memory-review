@@ -118,6 +118,9 @@ struct ChatView: View {
                         .strokeBorder(Color.secondary.opacity(0.25))
                 )
                 .onSubmit { app.sendDraft() }
+                // 기억으로 남기는 중에는 입력도 막는다. 그 사이에 보낸 말은
+                // 닫히는 중인 옛 세션으로 들어가고 화면에서는 사라진 것처럼 보인다.
+                .disabled(app.isStartingNewConversation)
 
             Button {
                 app.sendDraft()
@@ -126,7 +129,10 @@ struct ChatView: View {
                     .font(.system(size: 26))
             }
             .buttonStyle(.plain)
-            .disabled(app.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(
+                app.isStartingNewConversation
+                    || app.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            )
             .keyboardShortcut(.return, modifiers: [.command])
         }
         .padding(14)
